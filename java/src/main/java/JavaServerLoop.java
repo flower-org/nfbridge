@@ -21,6 +21,7 @@ public final class JavaServerLoop {
     private static final int DECISION_ALLOW = 1;
     private static final int DECISION_DROP = 2;
     private static final int MAX_PAYLOAD = 65535;
+    private static final int FLAG_TRUNCATED = 0x01;   // payload is only a prefix of the packet
 
     private static final String SOCKET_PATH = "/run/nfbridge/nfbridge.sock";
 
@@ -54,7 +55,8 @@ public final class JavaServerLoop {
             int packetId = in.readInt();
             int hwProto = in.readUnsignedShort();
             int hook = in.readUnsignedByte();
-            in.readUnsignedByte();                   // flags, reserved
+            int flags = in.readUnsignedByte();       // bits 1-7 reserved
+            boolean truncated = (flags & FLAG_TRUNCATED) != 0;
             int mark = in.readInt();
             int indev = in.readInt();
             int outdev = in.readInt();
@@ -67,7 +69,7 @@ public final class JavaServerLoop {
                 throw new IOException("truncated payload");
             }
 
-            boolean allow = decide(packet, packetId, hwProto, hook, mark, indev, outdev);
+            boolean allow = decide(packet, truncated, packetId, hwProto, hook, mark, indev, outdev);
 
             out.writeInt(MAGIC);
             out.writeShort(VERSION);
@@ -78,8 +80,8 @@ public final class JavaServerLoop {
         }
     }
 
-    /** Your policy. */
-    private static boolean decide(byte[] packet, int packetId, int hwProto, int hook,
+    /** Your policy. {@code truncated}: {@code packet} holds only the first bytes (nfbridge --copy-range). */
+    private static boolean decide(byte[] packet, boolean truncated, int packetId, int hwProto, int hook,
                                   int mark, int indev, int outdev) {
         return true;
     }
