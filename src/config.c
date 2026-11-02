@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #define _GNU_SOURCE
 #include "nfbridge/config.h"
+#include "nfbridge/protocol.h"
 
 #include <errno.h>
 #include <getopt.h>
@@ -24,13 +25,18 @@ static void usage(FILE *out, const char *prog)
             "  -q, --queue NUM        NFQUEUE number to bind (0-65535, default %d)\n"
             "  -s, --socket PATH      Unix socket of the Java process (default %s)\n"
             "  -t, --timeout-ms MS    max time to wait for a verdict (default %d)\n"
+            "  -c, --copy-range BYTES send only the first BYTES of each packet to Java\n"
+            "                         (%u-%u, default %u = whole packet); longer packets\n"
+            "                         are cut and flagged TRUNCATED\n"
+            "  -H, --headers-only     shortcut for --copy-range %u (IP + TCP/UDP headers)\n"
             "  -o, --fail-open        ACCEPT packets when Java is unavailable\n"
             "                         (default: fail-closed, i.e. DROP)\n"
             "  -l, --log-level LEVEL  error, warn, info or debug (default info)\n"
             "  -v, --verbose          shortcut for --log-level debug\n"
             "  -h, --help             show this help and exit\n"
             "  -V, --version          show version and exit\n",
-            prog, NFB_DEFAULT_QUEUE, NFB_DEFAULT_SOCKET, NFB_DEFAULT_TIMEOUT_MS);
+            prog, NFB_DEFAULT_QUEUE, NFB_DEFAULT_SOCKET, NFB_DEFAULT_TIMEOUT_MS, NFB_MIN_COPY_RANGE,
+            NFB_MAX_PAYLOAD, NFB_DEFAULT_COPY_RANGE, NFB_HEADERS_ONLY_COPY_RANGE);
 }
 
 static int parse_long(const char *s, long min, long max, long *out)
@@ -50,6 +56,8 @@ enum nfb_config_result nfb_config_parse(struct nfb_config *cfg, int argc, char *
         {"queue", required_argument, NULL, 'q'},
         {"socket", required_argument, NULL, 's'},
         {"timeout-ms", required_argument, NULL, 't'},
+        {"copy-range", required_argument, NULL, 'c'},
+        {"headers-only", no_argument, NULL, 'H'},
         {"fail-open", no_argument, NULL, 'o'},
         {"log-level", required_argument, NULL, 'l'},
         {"verbose", no_argument, NULL, 'v'},
@@ -62,12 +70,13 @@ enum nfb_config_result nfb_config_parse(struct nfb_config *cfg, int argc, char *
     cfg->queue_num = NFB_DEFAULT_QUEUE;
     cfg->socket_path = NFB_DEFAULT_SOCKET;
     cfg->timeout_ms = NFB_DEFAULT_TIMEOUT_MS;
+    cfg->copy_range = NFB_DEFAULT_COPY_RANGE;
     cfg->fail_open = false;
     cfg->log_level = NFB_LOG_INFO;
 
     int c;
     long v;
-    while ((c = getopt_long(argc, argv, "q:s:t:ol:vhV", opts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "q:s:t:c:Hol:vhV", opts, NULL)) != -1) {
         switch (c) {
         case 'q':
             if (parse_long(optarg, 0, 65535, &v) != 0) {
@@ -85,6 +94,17 @@ enum nfb_config_result nfb_config_parse(struct nfb_config *cfg, int argc, char *
                 return NFB_CONFIG_EXIT_USAGE;
             }
             cfg->timeout_ms = (int)v;
+            break;
+        case 'c':
+            if (parse_long(optarg, NFB_MIN_COPY_RANGE, NFB_MAX_PAYLOAD, &v) != 0) {
+                fprintf(stderr, "%s: invalid copy range '%s' (expected %u-%u bytes)\n", prog,
+                        optarg, NFB_MIN_COPY_RANGE, NFB_MAX_PAYLOAD);
+                return NFB_CONFIG_EXIT_USAGE;
+            }
+            cfg->copy_range = (uint32_t)v;
+            break;
+        case 'H':
+            cfg->copy_range = NFB_HEADERS_ONLY_COPY_RANGE;
             break;
         case 'o':
             cfg->fail_open = true;

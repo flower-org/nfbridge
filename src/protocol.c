@@ -51,6 +51,8 @@ int nfb_encode_request_hdr(uint8_t out[NFB_REQ_HDR_LEN], const struct nfb_reques
 {
     if (hdr->payload_len > NFB_MAX_PAYLOAD)
         return NFB_PROTO_ELENGTH;
+    if ((hdr->flags & ~NFB_FLAGS_KNOWN) != 0)
+        return NFB_PROTO_EFLAGS;
     put_u32(out + 0, NFB_PROTO_MAGIC);
     put_u16(out + 4, NFB_PROTO_VERSION);
     put_u16(out + 6, NFB_MSG_REQUEST);
@@ -58,7 +60,7 @@ int nfb_encode_request_hdr(uint8_t out[NFB_REQ_HDR_LEN], const struct nfb_reques
     put_u32(out + 16, hdr->packet_id);
     put_u16(out + 20, hdr->hw_protocol);
     out[22] = hdr->hook;
-    out[23] = 0;
+    out[23] = hdr->flags;
     put_u32(out + 24, hdr->mark);
     put_u32(out + 28, hdr->indev);
     put_u32(out + 32, hdr->outdev);
@@ -71,7 +73,7 @@ int nfb_decode_request_hdr(const uint8_t in[NFB_REQ_HDR_LEN], struct nfb_request
     int rc = check_preamble(in, NFB_MSG_REQUEST);
     if (rc != NFB_PROTO_OK)
         return rc;
-    if (in[23] != 0)
+    if ((in[23] & ~NFB_FLAGS_KNOWN) != 0)
         return NFB_PROTO_EFLAGS;
     uint32_t len = get_u32(in + 36);
     if (len > NFB_MAX_PAYLOAD)
@@ -80,11 +82,27 @@ int nfb_decode_request_hdr(const uint8_t in[NFB_REQ_HDR_LEN], struct nfb_request
     hdr->packet_id = get_u32(in + 16);
     hdr->hw_protocol = get_u16(in + 20);
     hdr->hook = in[22];
+    hdr->flags = in[23];
     hdr->mark = get_u32(in + 24);
     hdr->indev = get_u32(in + 28);
     hdr->outdev = get_u32(in + 32);
     hdr->payload_len = len;
     return NFB_PROTO_OK;
+}
+
+bool nfb_payload_truncated(const uint8_t *payload, uint32_t len, uint32_t copy_range)
+{
+    if (len < copy_range)
+        return false;
+    uint32_t packet_len = 0;
+    if (payload != NULL && len >= 1) {
+        unsigned version = payload[0] >> 4;
+        if (version == 4 && len >= 4)
+            packet_len = get_u16(payload + 2);
+        else if (version == 6 && len >= 6 && get_u16(payload + 4) != 0)
+            packet_len = 40u + get_u16(payload + 4);
+    }
+    return packet_len == 0 || packet_len > len;
 }
 
 int nfb_encode_response(uint8_t out[NFB_RESP_LEN], const struct nfb_response *resp)
@@ -128,7 +146,7 @@ const char *nfb_proto_strerror(int err)
     case NFB_PROTO_ELENGTH:
         return "invalid payload length";
     case NFB_PROTO_EFLAGS:
-        return "non-zero reserved flags";
+        return "unknown or reserved flags set";
     default:
         return "unknown protocol error";
     }

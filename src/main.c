@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #define _GNU_SOURCE
+#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,14 +66,15 @@ int main(int argc, char **argv)
         return EXIT_FATAL;
     }
 
-    LOG_INFO("starting: queue=%u socket=%s timeout=%dms policy=fail-%s", (unsigned)cfg.queue_num,
-             cfg.socket_path, cfg.timeout_ms, cfg.fail_open ? "open" : "closed");
+    LOG_INFO("starting: queue=%u socket=%s timeout=%dms policy=fail-%s copy-range=%" PRIu32,
+             (unsigned)cfg.queue_num, cfg.socket_path, cfg.timeout_ms,
+             cfg.fail_open ? "open" : "closed", cfg.copy_range);
 
     /* Try to connect early so misconfiguration is visible at startup; not fatal. */
     nfb_ipc_ensure_connected(&ipc);
 
     struct nfb_nfq q;
-    if (nfb_nfq_open(&q, cfg.queue_num, cfg.fail_open, &ipc) != 0) {
+    if (nfb_nfq_open(&q, cfg.queue_num, cfg.fail_open, cfg.copy_range, &ipc) != 0) {
         nfb_ipc_close(&ipc);
         return EXIT_FATAL;
     }

@@ -130,9 +130,10 @@ static void serve(int cfd, enum mode mode, long delay_ms)
         count++;
 
         printf("corr=%" PRIu64 " id=%" PRIu32 " hook=%u mark=%" PRIu32 " in=%" PRIu32
-               " out=%" PRIu32 " len=%" PRIu32 " %s => %s\n",
+               " out=%" PRIu32 " len=%" PRIu32 "%s %s => %s\n",
                hdr.correlation_id, hdr.packet_id, hdr.hook, hdr.mark, hdr.indev, hdr.outdev,
-               hdr.payload_len, desc, nfb_decision_str(d));
+               hdr.payload_len, (hdr.flags & NFB_FLAG_TRUNCATED) ? " (truncated)" : "", desc,
+               nfb_decision_str(d));
         fflush(stdout);
 
         if (delay_ms > 0) {

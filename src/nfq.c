@@ -44,6 +44,9 @@ static int on_packet(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq
         .packet_id = id,
         .hw_protocol = ntohs(ph->hw_protocol),
         .hook = ph->hook,
+        .flags = (uint8_t)(nfb_payload_truncated(payload, (uint32_t)len, q->copy_range)
+                               ? NFB_FLAG_TRUNCATED
+                               : 0),
         .mark = nfq_get_nfmark(nfa),
         .indev = nfq_get_indev(nfa),
         .outdev = nfq_get_outdev(nfa),
@@ -58,7 +61,8 @@ static int on_packet(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq
     }
 
     uint32_t verdict = decision == NFB_DECISION_ALLOW ? NF_ACCEPT : NF_DROP;
-    LOG_DEBUG("packet id=%" PRIu32 " len=%d hook=%u -> %s (%s)", id, len, (unsigned)ph->hook,
+    LOG_DEBUG("packet id=%" PRIu32 " len=%d%s hook=%u -> %s (%s)", id, len,
+              (hdr.flags & NFB_FLAG_TRUNCATED) ? " (truncated)" : "", (unsigned)ph->hook,
               nfb_decision_str(decision), source);
 
     if (nfq_set_verdict(qh, id, verdict, 0, NULL) < 0)
@@ -66,12 +70,14 @@ static int on_packet(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq
     return 0;
 }
 
-int nfb_nfq_open(struct nfb_nfq *q, uint16_t queue_num, bool fail_open, struct nfb_ipc *ipc)
+int nfb_nfq_open(struct nfb_nfq *q, uint16_t queue_num, bool fail_open, uint32_t copy_range,
+                 struct nfb_ipc *ipc)
 {
     memset(q, 0, sizeof(*q));
     q->fd = -1;
     q->queue_num = queue_num;
     q->fail_open = fail_open;
+    q->copy_range = copy_range;
     q->ipc = ipc;
 
     q->h = nfq_open();
@@ -102,7 +108,8 @@ int nfb_nfq_open(struct nfb_nfq *q, uint16_t queue_num, bool fail_open, struct n
         goto fail;
     }
 
-    if (nfq_set_mode(q->qh, NFQNL_COPY_PACKET, NFB_MAX_PAYLOAD) < 0) {
+    /* The verdict never carries packet data, so a truncated copy doesn't affect the packet. */
+    if (nfq_set_mode(q->qh, NFQNL_COPY_PACKET, copy_range) < 0) {
         LOG_ERROR("nfq_set_mode(NFQNL_COPY_PACKET): %s", strerror(errno));
         goto fail;
     }
@@ -114,7 +121,8 @@ int nfb_nfq_open(struct nfb_nfq *q, uint16_t queue_num, bool fail_open, struct n
     }
 
     q->fd = nfq_fd(q->h);
-    LOG_INFO("bound to NFQUEUE %u (fail-%s)", (unsigned)queue_num, fail_open ? "open" : "closed");
+    LOG_INFO("bound to NFQUEUE %u (fail-%s, copy range %" PRIu32 " bytes)", (unsigned)queue_num,
+             fail_open ? "open" : "closed", copy_range);
     return 0;
 
 fail:

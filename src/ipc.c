@@ -236,6 +236,11 @@ int nfb_ipc_decide(struct nfb_ipc *ipc, const struct nfb_request_hdr *hdr, const
                   hdr->packet_id, hdr->payload_len);
         return -1;
     }
+    if ((hdr->flags & ~NFB_FLAGS_KNOWN) != 0) {
+        LOG_ERROR("refusing to send packet %" PRIu32 ": unknown flags 0x%02x", hdr->packet_id,
+                  (unsigned)hdr->flags);
+        return -1;
+    }
 
     struct timespec deadline;
     ts_now(&deadline);

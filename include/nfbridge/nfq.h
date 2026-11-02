@@ -17,11 +17,16 @@ struct nfb_nfq {
     int fd;
     uint16_t queue_num;
     bool fail_open;
+    uint32_t copy_range;
     struct nfb_ipc *ipc;
 };
 
-/* Opens the NFQUEUE handle, binds the queue and sets packet copy mode. Returns 0 on success. */
-int nfb_nfq_open(struct nfb_nfq *q, uint16_t queue_num, bool fail_open, struct nfb_ipc *ipc);
+/*
+ * Opens the NFQUEUE handle, binds the queue and sets packet copy mode: the kernel copies
+ * up to copy_range bytes of each packet. Returns 0 on success.
+ */
+int nfb_nfq_open(struct nfb_nfq *q, uint16_t queue_num, bool fail_open, uint32_t copy_range,
+                 struct nfb_ipc *ipc);
 
 /* Processes packets until *stop becomes non-zero. Returns 0 on clean stop, -1 on fatal error. */
 int nfb_nfq_run(struct nfb_nfq *q, volatile sig_atomic_t *stop);

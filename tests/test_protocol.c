@@ -21,6 +21,7 @@ static void test_request_roundtrip(void)
         .packet_id = 0xA1B2C3D4u,
         .hw_protocol = 0x86DD,
         .hook = 3,
+        .flags = NFB_FLAG_TRUNCATED,
         .mark = 0xDEADBEEFu,
         .indev = 2,
         .outdev = 7,
@@ -32,7 +33,7 @@ static void test_request_roundtrip(void)
     /* Wire layout is big-endian at fixed offsets. */
     static const uint8_t expected_prefix[] = {0x4E, 0x46, 0x42, 0x52, 0x00, 0x01, 0x00, 0x01,
                                               0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                                              0xA1, 0xB2, 0xC3, 0xD4, 0x86, 0xDD, 0x03, 0x00};
+                                              0xA1, 0xB2, 0xC3, 0xD4, 0x86, 0xDD, 0x03, 0x01};
     CHECK(memcmp(buf, expected_prefix, sizeof(expected_prefix)) == 0);
     CHECK(buf[36] == 0x00 && buf[37] == 0x00 && buf[38] == 0x05 && buf[39] == 0xDC);
 
@@ -42,6 +43,7 @@ static void test_request_roundtrip(void)
     CHECK(out.packet_id == in.packet_id);
     CHECK(out.hw_protocol == in.hw_protocol);
     CHECK(out.hook == in.hook);
+    CHECK(out.flags == NFB_FLAG_TRUNCATED);
     CHECK(out.mark == in.mark);
     CHECK(out.indev == in.indev);
     CHECK(out.outdev == in.outdev);
@@ -57,11 +59,60 @@ static void test_request_validation(void)
     in.payload_len = NFB_MAX_PAYLOAD;
     CHECK(nfb_encode_request_hdr(buf, &in) == NFB_PROTO_OK);
     struct nfb_request_hdr out;
-    buf[23] = 1;
+    buf[23] = NFB_FLAG_TRUNCATED;
+    CHECK(nfb_decode_request_hdr(buf, &out) == NFB_PROTO_OK);
+    CHECK(out.flags == NFB_FLAG_TRUNCATED);
+    buf[23] = 0x02; /* reserved bit */
+    CHECK(nfb_decode_request_hdr(buf, &out) == NFB_PROTO_EFLAGS);
+    buf[23] = 0x80;
     CHECK(nfb_decode_request_hdr(buf, &out) == NFB_PROTO_EFLAGS);
     buf[23] = 0;
+
+    in.flags = 0x02;
+    CHECK(nfb_encode_request_hdr(buf, &in) == NFB_PROTO_EFLAGS);
+    in.flags = 0;
+    CHECK(nfb_encode_request_hdr(buf, &in) == NFB_PROTO_OK);
     buf[37] = 0x01; /* payload_len = 0x0001FFFF */
     CHECK(nfb_decode_request_hdr(buf, &out) == NFB_PROTO_ELENGTH);
+}
+
+static void test_payload_truncated(void)
+{
+    uint8_t p[256] = {0};
+
+    /* Shorter than the copy range: the kernel copied the whole packet. */
+    CHECK(!nfb_payload_truncated(p, 100, 256));
+    CHECK(!nfb_payload_truncated(NULL, 0, 256));
+
+    /* IPv4, total length 1500, 256 bytes captured */
+    p[0] = 0x45;
+    p[2] = 0x05;
+    p[3] = 0xDC;
+    CHECK(nfb_payload_truncated(p, 256, 256));
+    /* IPv4, exactly as long as the copy range */
+    p[2] = 0x01;
+    p[3] = 0x00;
+    CHECK(!nfb_payload_truncated(p, 256, 256));
+    /* Full-copy mode, packet fits */
+    CHECK(!nfb_payload_truncated(p, 256, NFB_MAX_PAYLOAD));
+
+    /* IPv6, payload length 1000 */
+    memset(p, 0, sizeof(p));
+    p[0] = 0x60;
+    p[4] = 0x03;
+    p[5] = 0xE8;
+    CHECK(nfb_payload_truncated(p, 256, 256));
+    /* IPv6, payload length 216: 40 + 216 = 256 */
+    p[4] = 0x00;
+    p[5] = 0xD8;
+    CHECK(!nfb_payload_truncated(p, 256, 256));
+    /* IPv6 jumbogram (payload length 0): length unknown, a full capture counts as truncated */
+    p[5] = 0x00;
+    CHECK(nfb_payload_truncated(p, 256, 256));
+
+    /* Not IP */
+    p[0] = 0x00;
+    CHECK(nfb_payload_truncated(p, 256, 256));
 }
 
 static void test_response_roundtrip(void)
@@ -125,6 +176,7 @@ int main(void)
 {
     test_request_roundtrip();
     test_request_validation();
+    test_payload_truncated();
     test_response_roundtrip();
     test_response_validation();
     if (failures) {

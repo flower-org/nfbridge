@@ -16,7 +16,8 @@
  *    16     4  packet_id      NFQUEUE packet id (informational)
  *    20     2  hw_protocol    EtherType (0x0800 IPv4, 0x86DD IPv6)
  *    22     1  hook           netfilter hook number
- *    23     1  flags          reserved, 0
+ *    23     1  flags          bit 0 TRUNCATED: payload is only a prefix of the packet
+ *                             (see --copy-range); bits 1-7 reserved, 0
  *    24     4  mark           packet mark (nfmark)
  *    28     4  indev          input interface index (0 if none)
  *    32     4  outdev         output interface index (0 if none)
@@ -31,6 +32,7 @@
  *    16     4  decision       1 = ALLOW, 2 = DROP
  */
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -42,6 +44,10 @@
 #define NFB_REQ_HDR_LEN 40u
 #define NFB_RESP_LEN 20u
 #define NFB_MAX_PAYLOAD 65535u
+
+/* Request flags */
+#define NFB_FLAG_TRUNCATED 0x01u
+#define NFB_FLAGS_KNOWN NFB_FLAG_TRUNCATED
 
 enum nfb_decision {
     NFB_DECISION_ALLOW = 1,
@@ -63,6 +69,7 @@ struct nfb_request_hdr {
     uint32_t packet_id;
     uint16_t hw_protocol;
     uint8_t hook;
+    uint8_t flags;
     uint32_t mark;
     uint32_t indev;
     uint32_t outdev;
@@ -74,7 +81,18 @@ struct nfb_response {
     enum nfb_decision decision;
 };
 
-/* Encodes a request header. Returns NFB_PROTO_ELENGTH if payload_len is too large. */
+/*
+ * Whether a packet captured with the given copy range is truncated. The kernel copies
+ * min(packet length, copy_range) bytes; the packet length is read from the IPv4/IPv6
+ * header. If it can't be read (not IP, header cut off, IPv6 jumbogram), a capture that
+ * filled the whole copy range counts as truncated.
+ */
+bool nfb_payload_truncated(const uint8_t *payload, uint32_t len, uint32_t copy_range);
+
+/*
+ * Encodes a request header. Returns NFB_PROTO_ELENGTH if payload_len is too large,
+ * NFB_PROTO_EFLAGS if flags has unknown bits set.
+ */
 int nfb_encode_request_hdr(uint8_t out[NFB_REQ_HDR_LEN], const struct nfb_request_hdr *hdr);
 int nfb_decode_request_hdr(const uint8_t in[NFB_REQ_HDR_LEN], struct nfb_request_hdr *hdr);
 
