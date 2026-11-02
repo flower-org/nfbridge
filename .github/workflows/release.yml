@@ -85,6 +85,12 @@ jobs:
         working-directory: dist
         run: sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS
 
+      - name: ls
+        run: ls -al dist
+
+      - name: sha256
+        run: openssl sha256 dist/*.tar.gz dist/SHA256SUMS
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
