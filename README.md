@@ -105,11 +105,14 @@ The binaries link dynamically against `libnetfilter_queue`; install it on the ta
 ## Run
 
 ```
-nfbridge [-q NUM] [-s PATH] [-t MS] [--fail-open] [-l LEVEL | -v]
+nfbridge [-q NUM] [-s PATH] [-t MS] [-c BYTES | -H] [--fail-open] [-l LEVEL | -v]
 
   -q, --queue NUM        NFQUEUE number to bind (0-65535, default 0)
   -s, --socket PATH      Unix socket of the Java process (default /run/nfbridge/nfbridge.sock)
   -t, --timeout-ms MS    max time to wait for a verdict (default 1000)
+  -c, --copy-range BYTES send only the first BYTES of each packet to Java
+                         (64-65535, default 65535 = whole packet)
+  -H, --headers-only     shortcut for --copy-range 256 (IP + TCP/UDP headers)
   -o, --fail-open        ACCEPT packets when Java is unavailable (default: DROP)
   -l, --log-level LEVEL  error, warn, info or debug (default info)
   -v, --verbose          shortcut for --log-level debug
@@ -284,6 +287,19 @@ sudo nft delete table inet nfbridge
 sudo ./build/nfbridge --queue 0 --socket /run/nfbridge/nfbridge.sock --fail-open
 ```
 
+### Headers only vs. whole packets
+
+By default the kernel copies each queued packet whole (up to 65535 bytes), and nfbridge
+forwards it to Java. If the Java side only looks at headers (addresses, ports, protocol),
+use `--headers-only` (or `--copy-range BYTES`): the kernel then copies only the first bytes
+of each packet, so less data is copied into nfbridge and sent to Java. Packets that
+don't fit are sent cut off and flagged `TRUNCATED` (see the IPC protocol). Only the copy sent
+to Java is cut: the verdict carries no packet data, so the packet itself passes or is dropped
+whole. Use the default (whole packets) when Java needs payloads, e.g. to record traffic.
+
+256 bytes covers IPv4 and TCP headers with all options (60 + 60) and IPv6 with typical
+extension headers. The copy range applies to the whole queue, not per packet.
+
 If the Java process itself talks over the network, its traffic can stall waiting on its own
 verdicts. In this fail-open setup it may be excluded by uid (`meta skuid` /
 `-m owner --uid-owner`) or by mark; in the kill-switch setup such an exemption would be an
@@ -322,12 +338,19 @@ request is only sent after its response arrives. All integers are **big-endian**
 | 16     | 4    | `packet_id`      | NFQUEUE packet id (informational)                  |
 | 20     | 2    | `hw_protocol`    | EtherType: `0x0800` IPv4, `0x86DD` IPv6            |
 | 22     | 1    | `hook`           | netfilter hook: 0 PREROUTING, 1 INPUT, 2 FORWARD, 3 OUTPUT, 4 POSTROUTING |
-| 23     | 1    | `flags`          | reserved, always `0`                               |
+| 23     | 1    | `flags`          | bit 0 `TRUNCATED`; bits 1-7 reserved, always `0`   |
 | 24     | 4    | `mark`           | packet mark                                        |
 | 28     | 4    | `indev`          | input interface index, `0` if none                 |
 | 32     | 4    | `outdev`         | output interface index, `0` if none                |
 | 36     | 4    | `payload_len`    | `0..65535`                                         |
 | 40     | N    | `payload`        | packet bytes starting at the IP header             |
+
+`TRUNCATED` (`flags & 0x01`): `payload` is only the first `payload_len` bytes of the packet
+(`--copy-range` / `--headers-only`). The packet's full length is in its IP header (IPv4 total
+length, IPv6 40 + payload length). nfbridge sets the flag when the packet is longer than the
+copy range. If the length can't be read from the IP header, nfbridge sets the flag whenever
+the copy is exactly `--copy-range` bytes long.
+Without the flag, `payload` is the whole packet.
 
 **Response** (Java → `nfbridge`): fixed 20 bytes.
 
@@ -363,13 +386,13 @@ while (true) {
             int packetId = in.readInt();
             int hwProto = in.readUnsignedShort();
             int hook = in.readUnsignedByte();
-            in.readUnsignedByte();               // flags
+            boolean truncated = (in.readUnsignedByte() & 0x01) != 0;   // flags: TRUNCATED
             int mark = in.readInt(), indev = in.readInt(), outdev = in.readInt();
             int len = in.readInt();
             if (len < 0 || len > 65535) throw new IOException("bad length");
             byte[] packet = in.readNBytes(len);
 
-            boolean allow = decide(packet);      // your policy
+            boolean allow = decide(packet, truncated);   // your policy
 
             out.writeInt(0x4E464252);
             out.writeShort(1);
@@ -388,7 +411,8 @@ while (true) {
   only that capability, e.g. systemd `User=nfbridge`, `AmbientCapabilities=CAP_NET_ADMIN`,
   `CapabilityBoundingSet=CAP_NET_ADMIN`, `NoNewPrivileges=yes`.
 - **Socket trust.** Whoever listens on the socket path decides the fate of every queued
-  packet and receives full packet contents. Put the socket in a directory only the Java
+  packet and receives packet contents (whole packets unless `--headers-only`/`--copy-range`).
+  Put the socket in a directory only the Java
   service user can write (e.g. `/run/nfbridge`, mode `0750`), and restrict who can connect.
 - **Fail-closed vs fail-open.** The recommended setup is the
   [kill switch](#routing-traffic-to-the-queue-kill-switch-recommended): if any part of the
@@ -404,7 +428,9 @@ while (true) {
   is an unapproved path – do not add one.
 - **Throughput.** This version is intentionally synchronous: one packet in flight at a time,
   so throughput is bounded by the Java round-trip latency. A stuck Java process stalls the
-  queue for up to `--timeout-ms` per packet. Packets are copied up to 65535 bytes.
+  queue for up to `--timeout-ms` per packet. Packets are copied up to 65535 bytes by default;
+  `--headers-only` / `--copy-range` copies less (see
+  [Headers only vs. whole packets](#headers-only-vs-whole-packets)).
 - **IPv6.** Both AF_INET and AF_INET6 are bound; on modern kernels (≥ 3.8) this is a no-op and
   the queue receives whatever your iptables/ip6tables/nftables rules send to it.
 
