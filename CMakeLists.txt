@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.13)
 
 project(nfbridge
-    VERSION 0.0.2
+    VERSION 0.0.4
     DESCRIPTION "Thin NFQUEUE packet interceptor that delegates verdicts to a Java process"
     LANGUAGES C)
 
